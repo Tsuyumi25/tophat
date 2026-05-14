@@ -30,14 +30,6 @@
           yarnCompatPatch = ''
             sed -i '/"packageManager": "yarn@4.9.2",/d' package.json
 
-            if ! grep -q '^approvedGitRepositories:' .yarnrc.yml; then
-              cat >> .yarnrc.yml <<'EOF'
-
-            approvedGitRepositories:
-              - "**"
-            EOF
-            fi
-
             if ! grep -q '^enableScripts:' .yarnrc.yml; then
               printf '\nenableScripts: true\n' >> .yarnrc.yml
             fi

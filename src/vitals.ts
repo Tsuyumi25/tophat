@@ -6,6 +6,7 @@ import NM from 'gi://NM';
 import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import { File } from './file.js';
+import { getGpuDeviceLabel, gpuCardIsUsable } from './gpu-info.js';
 import { NumTopProcs } from './monitor.js';
 import { FSUsage, ONE_GB_IN_B, readFileSystems } from './helpers.js';
 
@@ -30,6 +31,7 @@ const RE_NVME_DEV = /^nvme\d+n\d+$/;
 const RE_BLOCK_DEV = /^[^\d]+$/;
 const RE_CMD = /\/*[^\s]*\/([^\s]*)/;
 const RE_LAUNCHER = /[^\s]*(python\d*|gjs)\b[^/]*(\/.*)$/;
+const AMD_VENDOR_ID = '0x1002';
 
 export interface IActivity {
   val(): number;
@@ -171,6 +173,110 @@ export const Vitals = GObject.registerClass(
         GObject.ParamFlags.READWRITE,
         ''
       ),
+      'gpu-usage': GObject.ParamSpec.int(
+        'gpu-usage',
+        'GPU usage',
+        'Proportion of GPU usage as a value between 0 - 100',
+        GObject.ParamFlags.READWRITE,
+        0,
+        100,
+        0
+      ),
+      'gpu-device-name': GObject.ParamSpec.string(
+        'gpu-device-name',
+        'GPU device name',
+        'GPU device name',
+        GObject.ParamFlags.READWRITE,
+        ''
+      ),
+      'gpu-core-clock': GObject.ParamSpec.int(
+        'gpu-core-clock',
+        'GPU core clock',
+        'GPU core clock in MHz',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-mem-clock': GObject.ParamSpec.int(
+        'gpu-mem-clock',
+        'GPU memory clock',
+        'GPU memory clock in MHz',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-voltage': GObject.ParamSpec.int(
+        'gpu-voltage',
+        'GPU voltage',
+        'GPU voltage in mV',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-power': GObject.ParamSpec.int(
+        'gpu-power',
+        'GPU power',
+        'GPU power draw in W',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-temp': GObject.ParamSpec.int(
+        'gpu-temp',
+        'GPU edge temperature',
+        'GPU edge temperature in Celsius',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-temp-junction': GObject.ParamSpec.int(
+        'gpu-temp-junction',
+        'GPU junction temperature',
+        'GPU junction temperature in Celsius',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-temp-mem': GObject.ParamSpec.int(
+        'gpu-temp-mem',
+        'GPU memory temperature',
+        'GPU memory temperature in Celsius',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-vram-size': GObject.ParamSpec.int(
+        'gpu-vram-size',
+        'GPU VRAM size',
+        'Size of GPU VRAM in GB',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-vram-size-used': GObject.ParamSpec.int(
+        'gpu-vram-size-used',
+        'GPU VRAM used',
+        'Size of used GPU VRAM in GB',
+        GObject.ParamFlags.READWRITE,
+        0,
+        0,
+        0
+      ),
+      'gpu-history': GObject.ParamSpec.string(
+        'gpu-history',
+        'GPU usage history',
+        'GPU usage history',
+        GObject.ParamFlags.READWRITE,
+        ''
+      ),
       'net-recv': GObject.ParamSpec.int(
         'net-recv',
         'Network bytes received',
@@ -299,6 +405,9 @@ export const Vitals = GObject.registerClass(
     private cpuState: CpuState;
     public memInfo: MemInfo;
     private memUsageHistory = new Array<MemUsage>(MaxHistoryLen);
+    private gpuInfo: GpuInfo;
+    private gpuUsageHistory = new Array<GpuUsage>(MaxHistoryLen);
+    private gpuCardPath: string | null = null;
     private netState: NetDevState;
     private netActivityHistory = new Array<NetActivity>(MaxHistoryLen);
     private diskState: DiskState;
@@ -311,6 +420,8 @@ export const Vitals = GObject.registerClass(
     private groupRelated;
     private showCpu;
     private showMem;
+    private showGpu;
+    private gpuDevice;
     private showNet;
     private showDisk;
     private showFS;
@@ -329,6 +440,7 @@ export const Vitals = GObject.registerClass(
       this.cpuModel = model;
       this.cpuState = new CpuState(model.cores, model.tempMonitors.size);
       this.memInfo = new MemInfo();
+      this.gpuInfo = new GpuInfo();
       this.netState = new NetDevState();
       this.nm = null;
 
@@ -337,6 +449,9 @@ export const Vitals = GObject.registerClass(
       }
       for (let i = 0; i < this.memUsageHistory.length; i++) {
         this.memUsageHistory[i] = new MemUsage();
+      }
+      for (let i = 0; i < this.gpuUsageHistory.length; i++) {
+        this.gpuUsageHistory[i] = new GpuUsage();
       }
       for (let i = 0; i < this.netActivityHistory.length; i++) {
         this.netActivityHistory[i] = new NetActivity();
@@ -376,6 +491,26 @@ export const Vitals = GObject.registerClass(
       this.showMem = gsettings.get_boolean('show-mem');
       id = this.gsettings.connect('changed::show-mem', (settings) => {
         this.showMem = settings.get_boolean('show-mem');
+      });
+      this.settingSignals.push(id);
+
+      this.showGpu = gsettings.get_boolean('show-gpu');
+      id = this.gsettings.connect('changed::show-gpu', (settings) => {
+        this.showGpu = settings.get_boolean('show-gpu');
+      });
+      this.settingSignals.push(id);
+
+      this.gpuDevice = gsettings.get_string('gpu-device');
+      if (this.gpuDevice === _('Automatic')) {
+        this.gpuDevice = '';
+      }
+      id = this.gsettings.connect('changed::gpu-device', (settings) => {
+        this.gpuDevice = settings.get_string('gpu-device');
+        if (this.gpuDevice === _('Automatic')) {
+          this.gpuDevice = '';
+        }
+        this.gpuCardPath = null;
+        this.readSummaries();
       });
       this.settingSignals.push(id);
 
@@ -513,6 +648,9 @@ export const Vitals = GObject.registerClass(
       }
       if (this.showMem) {
         this.loadMeminfo();
+      }
+      if (this.showGpu) {
+        this.loadGpu();
       }
       if (this.showNet) {
         this.loadNetDev();
@@ -702,6 +840,72 @@ export const Vitals = GObject.registerClass(
         })
         .catch((e) => {
           console.warn(`[TopHat] error in loadMeminfo(): ${e}`);
+        });
+    }
+
+    private loadGpu() {
+      const gpuCardPath = this.getGpuCardPath();
+      if (!gpuCardPath) {
+        this.gpu_usage = -1;
+        this.gpu_device_name = '';
+        this.gpu_core_clock = 0;
+        this.gpu_mem_clock = 0;
+        this.gpu_voltage = 0;
+        this.gpu_power = 0;
+        this.gpu_temp = 0;
+        this.gpu_temp_junction = 0;
+        this.gpu_temp_mem = 0;
+        this.gpu_vram_size = 0;
+        this.gpu_vram_size_used = 0;
+        return;
+      }
+
+      this.gpu_device_name = this.getGpuCardSummary(gpuCardPath);
+
+      const busyFile = new File(`${gpuCardPath}/device/gpu_busy_percent`);
+      const vramTotalFile = new File(
+        `${gpuCardPath}/device/mem_info_vram_total`
+      );
+      const vramUsedFile = new File(`${gpuCardPath}/device/mem_info_vram_used`);
+
+      Promise.all([busyFile.read(), vramTotalFile.read(), vramUsedFile.read()])
+        .then(([busy, total, used]) => {
+          this.gpuInfo.usage = parsePercent(busy);
+          this.gpuInfo.vramTotal = parseBytesToGB(total);
+          this.gpuInfo.vramUsed = parseBytesToGB(used);
+          const hwmon = this.getGpuHwmonPath(gpuCardPath);
+          this.gpu_core_clock = readMHz(`${hwmon}/freq1_input`);
+          this.gpu_mem_clock = readMHz(`${hwmon}/freq2_input`);
+          this.gpu_voltage = readMilliVolts(`${hwmon}/in0_input`);
+          this.gpu_power = readWatts(`${hwmon}/power1_average`);
+          this.gpu_temp = readMilliCelsius(`${hwmon}/temp1_input`);
+          this.gpu_temp_junction = readMilliCelsius(`${hwmon}/temp2_input`);
+          this.gpu_temp_mem = readMilliCelsius(`${hwmon}/temp3_input`);
+
+          const usage = new GpuUsage();
+          usage.utilization = this.gpuInfo.usage;
+          if (this.gpuUsageHistory.unshift(usage) > MaxHistoryLen) {
+            this.gpuUsageHistory.pop();
+          }
+
+          this.gpu_usage = this.gpuInfo.usage;
+          this.gpu_vram_size = this.gpuInfo.vramTotal;
+          this.gpu_vram_size_used = this.gpuInfo.vramUsed;
+          this.gpu_history = this.hashGpuHistory();
+        })
+        .catch((e) => {
+          console.warn(`[TopHat] error in loadGpu(): ${e}`);
+          this.gpuCardPath = null;
+          this.gpu_usage = -1;
+          this.gpu_core_clock = 0;
+          this.gpu_mem_clock = 0;
+          this.gpu_voltage = 0;
+          this.gpu_power = 0;
+          this.gpu_temp = 0;
+          this.gpu_temp_junction = 0;
+          this.gpu_temp_mem = 0;
+          this.gpu_vram_size = 0;
+          this.gpu_vram_size_used = 0;
         });
     }
 
@@ -1163,6 +1367,10 @@ export const Vitals = GObject.registerClass(
       return this.memUsageHistory;
     }
 
+    public getGpuHistory() {
+      return this.gpuUsageHistory;
+    }
+
     public getNetActivity() {
       return this.netActivityHistory;
     }
@@ -1205,6 +1413,18 @@ export const Vitals = GObject.registerClass(
       const hash = cs.get_string();
       // console.timeEnd('hashMemHistory');
       return hash;
+    }
+
+    private hashGpuHistory() {
+      let toHash = '';
+      for (const u of this.gpuUsageHistory) {
+        if (u) {
+          toHash += (u.utilization * 100).toFixed(0);
+        }
+      }
+      const cs = GLib.Checksum.new(GLib.ChecksumType.MD5);
+      cs.update(toHash);
+      return cs.get_string();
     }
 
     private hashNetHistory() {
@@ -1419,6 +1639,150 @@ export const Vitals = GObject.registerClass(
       this.notify('mem-top-procs');
     }
 
+    public get gpu_usage(): number {
+      return this.props.gpu_usage;
+    }
+
+    private set gpu_usage(v: number) {
+      if (this.gpu_usage === v) {
+        return;
+      }
+      this.props.gpu_usage = v;
+      this.notify('gpu-usage');
+    }
+
+    public get gpu_device_name(): string {
+      return this.props.gpu_device_name;
+    }
+
+    private set gpu_device_name(v: string) {
+      if (this.gpu_device_name === v) {
+        return;
+      }
+      this.props.gpu_device_name = v;
+      this.notify('gpu-device-name');
+    }
+
+    public get gpu_core_clock(): number {
+      return this.props.gpu_core_clock;
+    }
+
+    private set gpu_core_clock(v: number) {
+      if (this.gpu_core_clock === v) {
+        return;
+      }
+      this.props.gpu_core_clock = v;
+      this.notify('gpu-core-clock');
+    }
+
+    public get gpu_mem_clock(): number {
+      return this.props.gpu_mem_clock;
+    }
+
+    private set gpu_mem_clock(v: number) {
+      if (this.gpu_mem_clock === v) {
+        return;
+      }
+      this.props.gpu_mem_clock = v;
+      this.notify('gpu-mem-clock');
+    }
+
+    public get gpu_voltage(): number {
+      return this.props.gpu_voltage;
+    }
+
+    private set gpu_voltage(v: number) {
+      if (this.gpu_voltage === v) {
+        return;
+      }
+      this.props.gpu_voltage = v;
+      this.notify('gpu-voltage');
+    }
+
+    public get gpu_power(): number {
+      return this.props.gpu_power;
+    }
+
+    private set gpu_power(v: number) {
+      if (this.gpu_power === v) {
+        return;
+      }
+      this.props.gpu_power = v;
+      this.notify('gpu-power');
+    }
+
+    public get gpu_temp(): number {
+      return this.props.gpu_temp;
+    }
+
+    private set gpu_temp(v: number) {
+      if (this.gpu_temp === v) {
+        return;
+      }
+      this.props.gpu_temp = v;
+      this.notify('gpu-temp');
+    }
+
+    public get gpu_temp_junction(): number {
+      return this.props.gpu_temp_junction;
+    }
+
+    private set gpu_temp_junction(v: number) {
+      if (this.gpu_temp_junction === v) {
+        return;
+      }
+      this.props.gpu_temp_junction = v;
+      this.notify('gpu-temp-junction');
+    }
+
+    public get gpu_temp_mem(): number {
+      return this.props.gpu_temp_mem;
+    }
+
+    private set gpu_temp_mem(v: number) {
+      if (this.gpu_temp_mem === v) {
+        return;
+      }
+      this.props.gpu_temp_mem = v;
+      this.notify('gpu-temp-mem');
+    }
+
+    public get gpu_vram_size(): number {
+      return this.props.gpu_vram_size;
+    }
+
+    private set gpu_vram_size(v: number) {
+      if (this.gpu_vram_size === v) {
+        return;
+      }
+      this.props.gpu_vram_size = v;
+      this.notify('gpu-vram-size');
+    }
+
+    public get gpu_vram_size_used(): number {
+      return this.props.gpu_vram_size_used;
+    }
+
+    private set gpu_vram_size_used(v: number) {
+      if (this.gpu_vram_size_used === v) {
+        return;
+      }
+      this.props.gpu_vram_size_used = v;
+      this.notify('gpu-vram-size-used');
+    }
+
+    public get gpu_history() {
+      return this.props.gpu_history;
+    }
+
+    private set gpu_history(v: string) {
+      if (this.gpu_history === v) {
+        return;
+      }
+      this.props.gpu_history = v;
+      this.notify('gpu-history');
+    }
+
     public get net_recv() {
       return this.props.net_recv;
     }
@@ -1604,6 +1968,65 @@ export const Vitals = GObject.registerClass(
       }
       super.vfunc_dispose();
     }
+
+    private getGpuCardPath(): string | null {
+      if (this.gpuDevice) {
+        const selectedPath = `/sys/class/drm/${this.gpuDevice}`;
+        if (gpuCardIsUsable(selectedPath)) {
+          this.gpuCardPath = selectedPath;
+          return this.gpuCardPath;
+        }
+        return null;
+      }
+
+      if (this.gpuCardPath) {
+        if (gpuCardIsUsable(this.gpuCardPath)) {
+          return this.gpuCardPath;
+        }
+      }
+
+      let fallback: string | null = null;
+      const drm = new File('/sys/class/drm');
+      for (const entry of drm.listSync().sort()) {
+        if (!entry.match(/^card\d+$/)) {
+          continue;
+        }
+
+        const cardPath = `/sys/class/drm/${entry}`;
+        if (!gpuCardIsUsable(cardPath)) {
+          continue;
+        }
+
+        if (!fallback) {
+          fallback = cardPath;
+        }
+
+        const vendor = new File(`${cardPath}/device/vendor`)
+          .readSync(false)
+          .toLowerCase();
+        if (vendor === AMD_VENDOR_ID) {
+          this.gpuCardPath = cardPath;
+          return this.gpuCardPath;
+        }
+      }
+
+      this.gpuCardPath = fallback;
+      return this.gpuCardPath;
+    }
+
+    private getGpuCardSummary(cardPath: string): string {
+      const card = cardPath.substring(cardPath.lastIndexOf('/') + 1);
+      return getGpuDeviceLabel(card);
+    }
+
+    private getGpuHwmonPath(cardPath: string): string {
+      const hwmonRoot = new File(`${cardPath}/device/hwmon`);
+      const entries = hwmonRoot.listSync().sort();
+      if (entries.length === 0) {
+        return `${cardPath}/device/hwmon`;
+      }
+      return `${cardPath}/device/hwmon/${entries[0]}`;
+    }
   }
 );
 
@@ -1622,6 +2045,18 @@ class Properties {
   swap_size_free = 0;
   mem_history = '';
   mem_top_procs = '';
+  gpu_usage = -1;
+  gpu_device_name = '';
+  gpu_core_clock = 0;
+  gpu_mem_clock = 0;
+  gpu_voltage = 0;
+  gpu_power = 0;
+  gpu_temp = 0;
+  gpu_temp_junction = 0;
+  gpu_temp_mem = 0;
+  gpu_vram_size = 0;
+  gpu_vram_size_used = 0;
+  gpu_history = '';
   net_recv = -1;
   net_sent = -1;
   net_recv_total = 0;
@@ -1856,6 +2291,26 @@ class MemUsage implements IHistory {
 
   public toString(): string {
     return `Memory usage: ${this.usedMem.toFixed(2)} Swap usage: ${this.usedSwap.toFixed(2)}`;
+  }
+}
+
+class GpuInfo {
+  public usage = 0;
+  public vramTotal = 0;
+  public vramUsed = 0;
+}
+
+class GpuUsage implements IHistory {
+  public utilization = 0;
+
+  public val() {
+    return this.utilization;
+  }
+
+  public copy() {
+    const c = new GpuUsage();
+    c.utilization = this.utilization;
+    return c;
   }
 }
 
@@ -2145,6 +2600,54 @@ function readKb(line: string): number {
     kb = parseInt(m[1]);
   }
   return kb;
+}
+
+function parsePercent(value: string): number {
+  let percent = parseInt(value) / 100;
+  if (Number.isNaN(percent)) {
+    percent = 0;
+  }
+  return Math.max(0, Math.min(1, percent));
+}
+
+function parseBytesToGB(value: string): number {
+  let gb = Math.round((parseInt(value) / ONE_GB_IN_B) * 10) / 10;
+  if (Number.isNaN(gb)) {
+    gb = 0;
+  }
+  return gb;
+}
+
+function readMHz(path: string): number {
+  const value = parseInt(new File(path).readSync(false));
+  if (Number.isNaN(value)) {
+    return 0;
+  }
+  return Math.round(value / 1000000);
+}
+
+function readMilliVolts(path: string): number {
+  const value = parseInt(new File(path).readSync(false));
+  if (Number.isNaN(value)) {
+    return 0;
+  }
+  return value;
+}
+
+function readWatts(path: string): number {
+  const value = parseInt(new File(path).readSync(false));
+  if (Number.isNaN(value)) {
+    return 0;
+  }
+  return Math.round(value / 1000000);
+}
+
+function readMilliCelsius(path: string): number {
+  const value = parseInt(new File(path).readSync(false));
+  if (Number.isNaN(value)) {
+    return 0;
+  }
+  return Math.round(value / 1000);
 }
 
 function refreshRateModifier(settings: Gio.Settings): number {

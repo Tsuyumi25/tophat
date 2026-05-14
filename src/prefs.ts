@@ -28,6 +28,7 @@ import {
 // @ts-expect-error "Module exists"
 import * as Config from 'resource:///org/gnome/Shell/Extensions/js/misc/config.js';
 
+import { listUsableGpuDevices } from './gpu-info.js';
 import { readFileSystems } from './helpers.js';
 
 const GnomeMajorVer = parseInt(Config.PACKAGE_VERSION.split('.')[0]);
@@ -39,6 +40,7 @@ export default class TopHatPrefs extends ExtensionPreferences {
 
       window.add(this.buildGeneralPage());
       window.add(this.buildCpuPage());
+      window.add(this.buildGpuPage());
       window.add(this.buildMemPage());
       window.add(this.buildDiskPage());
       window.add(this.buildNetPage());
@@ -180,6 +182,57 @@ export default class TopHatPrefs extends ExtensionPreferences {
 
     // Absolute units
     this.addActionRow(_('Show usage in GB'), 'mem-abs-units', group);
+
+    return page;
+  }
+
+  private buildGpuPage() {
+    const page = new Adw.PreferencesPage({
+      title: _('GPU'),
+      iconName: 'gpu-icon-symbolic',
+    });
+
+    const group = new Adw.PreferencesGroup({ title: _('GPU') });
+    page.add(group);
+
+    this.addActionRow(_('Show the GPU monitor'), 'show-gpu', group);
+
+    const gpuChoices = new Gtk.StringList();
+    const gpuValues = [''];
+    const gpuDeviceRow = this.addComboRow(
+      _('GPU device'),
+      gpuChoices,
+      'gpu-device',
+      group,
+      false,
+      gpuValues
+    );
+
+    gpuChoices.append(_('Automatic'));
+    const selectedGpu = this.getSettings().get_string('gpu-device');
+    let selectedIndex = 0;
+    let i = 1;
+    for (const gpu of listUsableGpuDevices()) {
+      gpuChoices.append(gpu.label);
+      gpuValues.push(gpu.id);
+      if (selectedGpu === gpu.id) {
+        selectedIndex = i;
+      }
+      i++;
+    }
+    gpuDeviceRow.set_selected(selectedIndex);
+
+    const choices = new Gtk.StringList();
+    choices.append(_('Usage meter'));
+    choices.append(_('Numeric value'));
+    choices.append(_('Both meter and value'));
+    this.addComboRow(_('Show as'), choices, 'gpu-display', group);
+
+    const vramChoices = new Gtk.StringList();
+    vramChoices.append(_('Usage meter'));
+    vramChoices.append(_('Numeric value'));
+    vramChoices.append(_('Both meter and value'));
+    this.addComboRow(_('VRAM show as'), vramChoices, 'gpu-vram-display', group);
 
     return page;
   }
@@ -399,7 +452,8 @@ export default class TopHatPrefs extends ExtensionPreferences {
     choices: Gtk.StringList,
     setting: string,
     group: Adw.PreferencesGroup,
-    settingIsEnum = true
+    settingIsEnum = true,
+    settingValues?: string[]
   ) {
     const settings = this.getSettings();
     let selected = 0;
@@ -407,8 +461,10 @@ export default class TopHatPrefs extends ExtensionPreferences {
       selected = settings.get_enum(setting);
     } else {
       const selectedVal = settings.get_string(setting);
+      const values = settingValues || [];
       for (let i = 0; choices && i < choices.get_n_items(); i++) {
-        if (selectedVal === choices.get_string(i)) {
+        const value = values[i] ?? choices.get_string(i);
+        if (selectedVal === value) {
           selected = i;
         }
       }
@@ -425,7 +481,8 @@ export default class TopHatPrefs extends ExtensionPreferences {
         settings.set_enum(setting, widget.selected);
       } else {
         const item = widget.selectedItem as Gtk.StringObject;
-        settings.set_string(setting, item.string);
+        const value = settingValues?.[widget.selected] ?? item.string;
+        settings.set_string(setting, value);
       }
     });
 

@@ -38,6 +38,21 @@
       <summary>How to visualize the memory monitor</summary>
       <description>How to visualize the memory monitor</description>
     </key>
+    <key name="gpu-display" enum="org.gnome.shell.extensions.tophat.visualization">
+      <default>'chart'</default>
+      <summary>How to visualize the GPU monitor</summary>
+      <description>How to visualize the GPU monitor</description>
+    </key>
+    <key name="gpu-vram-display" enum="org.gnome.shell.extensions.tophat.visualization">
+      <default>'numeric'</default>
+      <summary>How to visualize the GPU VRAM monitor</summary>
+      <description>How to visualize the GPU VRAM monitor</description>
+    </key>
+    <key name="gpu-device" type="s">
+      <default>''</default>
+      <summary>GPU device to monitor</summary>
+      <description>The DRM GPU device to monitor.</description>
+    </key>
     <!-- <key name="disk-display" enum="org.gnome.shell.extensions.tophat.visualization">
       <default>'chart'</default>
       <summary>How to visualize the disk monitor</summary>
@@ -72,6 +87,11 @@
       <default>true</default>
       <summary>Show the memory monitor</summary>
       <description>Show the memory monitor.</description>
+    </key>
+    <key name="show-gpu" type="b">
+      <default>false</default>
+      <summary>Show the GPU monitor</summary>
+      <description>Show the GPU monitor.</description>
     </key>
     <key name="show-net" type="b">
       <default>true</default>

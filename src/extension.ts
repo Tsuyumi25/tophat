@@ -25,6 +25,7 @@ import { File } from './file.js';
 import { Vitals, CpuModel } from './vitals.js';
 import { TopHatContainer } from './container.js';
 import { CpuMonitor } from './cpu.js';
+import { GpuMonitor } from './gpu.js';
 import { MemMonitor } from './mem.js';
 import { DiskMonitor } from './disk.js';
 import { NetMonitor } from './net.js';
@@ -174,6 +175,7 @@ export default class TopHat extends Extension {
     this.container?.destroy();
     this.container = new TopHatContainer(0.5, 'TopHat');
     this.container.addMonitor(new CpuMonitor(this.metadata, this.gsettings));
+    this.container.addMonitor(new GpuMonitor(this.metadata, this.gsettings));
     this.container.addMonitor(new MemMonitor(this.metadata, this.gsettings));
     this.container.addMonitor(new DiskMonitor(this.metadata, this.gsettings));
     this.container.addMonitor(new NetMonitor(this.metadata, this.gsettings));

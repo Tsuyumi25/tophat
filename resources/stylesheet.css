@@ -3,6 +3,10 @@
   padding: 0;
 }
 
+.tophat-panel-icon-secondary {
+  margin: 0 6px 0 10px;
+}
+
 .tophat-panel-icon-net {
   margin: 0;
   padding: 0;
@@ -62,6 +66,10 @@
   border-radius: 2px;
 }
 
+.tophat-meter-secondary {
+  margin-right: 6px;
+}
+
 .transparent-meter {
   background-color: rgba(10, 10, 10, 0.3);
 }
@@ -78,7 +86,7 @@
 .tophat-menu-grid {
   margin: 0.25em 0.25em 1em 0.25em;
   padding: 0;
-  min-width: 18em;
+  min-width: 22em;
 }
 
 .tophat-menu-header {
@@ -111,6 +119,10 @@
 .tophat-menu-details {
   font-size: 0.8em;
   padding: 0.25em 0.5em;
+}
+
+.tophat-menu-gpu-device {
+  max-width: 28em;
 }
 
 .tophat-menu-section-end {
